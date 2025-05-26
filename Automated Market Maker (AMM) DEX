@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract AutomatedMarketMakerDEX is ReentrancyGuard {
+    IERC20 public tokenA;
+    IERC20 public tokenB;
+
+    uint256 public reserveA;
+    uint256 public reserveB;
+    uint256 public totalLiquidity;
+    mapping(address => uint256) public liquidity;
+
+    event LiquidityAdded(address indexed provider, uint256 amountA, uint256 amountB);
+    event LiquidityRemoved(address indexed provider, uint256 amountA, uint256 amountB);
+    event TokensSwapped(address indexed user, address fromToken, address toToken, uint256 amountIn, uint256 amountOut);
+
+    constructor(address _tokenA, address _tokenB) {
+        tokenA = IERC20(_tokenA);
+        tokenB = IERC20(_tokenB);
+    }
+
+    function _updateReserves(uint256 _reserveA, uint256 _reserveB) private {
+        reserveA = _reserveA;
+        reserveB = _reserveB;
+    }
+
+    function addLiquidity(uint256 amountA, uint256 amountB) external nonReentrant {
+        require(amountA > 0 && amountB > 0, "Invalid amounts");
+
+        tokenA.transferFrom(msg.sender, address(this), amountA);
+        tokenB.transferFrom(msg.sender, address(this), amountB);
+
+        uint256 liquidityMinted = amountA; // Simplified liquidity calc
+        liquidity[msg.sender] += liquidityMinted;
+        totalLiquidity += liquidityMinted;
+
+        _updateReserves(tokenA.balanceOf(address(this)), tokenB.balanceOf(address(this)));
+
+        emit LiquidityAdded(msg.sender, amountA, amountB);
+    }
+
+    function removeLiquidity(uint256 liquidityAmount) external nonReentrant {
+        require(liquidity[msg.sender] >= liquidityAmount, "Insufficient liquidity");
+
+        uint256 amountA = (reserveA * liquidityAmount) / totalLiquidity;
+        uint256 amountB = (reserveB * liquidityAmount) / totalLiquidity;
+
+        liquidity[msg.sender] -= liquidityAmount;
+        totalLiquidity -= liquidityAmount;
+
+        tokenA.transfer(msg.sender, amountA);
+        tokenB.transfer(msg.sender, amountB);
+
+        _updateReserves(tokenA.balanceOf(address(this)), tokenB.balanceOf(address(this)));
+
+        emit LiquidityRemoved(msg.sender, amountA, amountB);
+    }
+
+    function swapTokens(address fromToken, uint256 amountIn) external nonReentrant {
+        require(amountIn > 0, "Invalid input");
+
+        bool isAToB = fromToken == address(tokenA);
+        IERC20 inputToken = isAToB ? tokenA : tokenB;
+        IERC20 outputToken = isAToB ? tokenB : tokenA;
+
+        uint256 inputReserve = isAToB ? reserveA : reserveB;
+        uint256 outputReserve = isAToB ? reserveB : reserveA;
+
+        inputToken.transferFrom(msg.sender, address(this), amountIn);
+
+        // Constant product formula: x * y = k
+        uint256 amountInWithFee = amountIn * 997 / 1000;
+        uint256 numerator = amountInWithFee * outputReserve;
+        uint256 denominator = inputReserve + amountInWithFee;
+        uint256 amountOut = numerator / denominator;
+
+        outputToken.transfer(msg.sender, amountOut);
+
+        _updateReserves(tokenA.balanceOf(address(this)), tokenB.balanceOf(address(this)));
+
+        emit TokensSwapped(msg.sender, fromToken, address(outputToken), amountIn, amountOut);
+    }
+}
